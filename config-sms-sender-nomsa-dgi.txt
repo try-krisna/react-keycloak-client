@@ -1,0 +1,20 @@
+-- Config Nomsa DGI 
+-- Sender:  NOMSA-DGI
+-- Check target User
+
+credential Name For Nomsa-DGI: JDJiJDEwJFRSN2JVUHAwUDE3YnNuSE1wb2xjRmVYQ0lBb01yaUpCckVLbjA5bE92OVVDZjBMbUJGMHph
+
+select * from users where email= 'nomsa@gdi.gov.kh';
+
+-- Verify Credentail by UserID
+select * from user_credentials where user_id = 165;
+
+-- verify credential is exit
+select * from  credentials where name = 'JDJiJDEwJFRSN2JVUHAwUDE3YnNuSE1wb2xjRmVYQ0lBb01yaUpCckVLbjA5bE92OVVDZjBMbUJGMHph';
+
+-- Add crdentails to target User
+insert into user_credentials ( user_id,label, cred_name, type, created_at, updated_at) values (165,'nomsa-dgi','JDJiJDEwJFRSN2JVUHAwUDE3YnNuSE1wb2xjRmVYQ0lBb01yaUpCckVLbjA5bE92OVVDZjBMbUJGMHph','SMS',now(),now());
+
+
+-- Final Verify Credentail by UserID
+select * from user_credentials where user_id = 21 and cred_name = 'JDJiJDEwJFRSN2JVUHAwUDE3YnNuSE1wb2xjRmVYQ0lBb01yaUpCckVLbjA5bE92OVVDZjBMbUJGMHph';
