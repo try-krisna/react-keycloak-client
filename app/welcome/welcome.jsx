@@ -70,7 +70,7 @@ export default function App() {
       });
 
       const auth = await kc.init({
-        onLoad: "check-sso",
+        // onLoad: "check-sso",
         pkceMethod: cfg.pkceMethod !== "none" ? cfg.pkceMethod : undefined,
         checkLoginIframe: false,
       });
