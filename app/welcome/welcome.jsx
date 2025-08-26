@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Keycloak from "keycloak-js";
 import {
   ChakraProvider,
@@ -12,61 +12,57 @@ import {
   Box,
   Flex,
   HStack,
-  Image,
-  Badge,
+  Input,
+  Select,
   Divider,
+  Collapse,
   SimpleGrid,
+  Badge,
   Progress,
   Code,
-  Input,
-  Collapse,
+  Image,
 } from "@chakra-ui/react";
 import { FaSignOutAlt, FaUser, FaKey, FaInfo, FaCog, FaSave } from "react-icons/fa";
 
-// Default config (used only if no hash present)
+// --- Default Config ---
 const DEFAULT_CONFIG = {
-  url: null,
-  realm: null,
-  clientId: null
+  url: "http://localhost:8080",
+  realm: "myrealm",
+  clientId: "myclient",
+  clientSecret: "",
+  pkceMethod: "none", // "none", "S256", "plain"
 };
 
-// Parse config from URL hash (#url=...&realm=...&client=...)
-const parseHashConfig = () => {
-  if (typeof window === "undefined") return DEFAULT_CONFIG;
-  const hash = window.location.hash.substring(1);
-  const params = new URLSearchParams(hash);
-  return {
-    url: params.get("url") || DEFAULT_CONFIG.url,
-    realm: params.get("realm") || DEFAULT_CONFIG.realm,
-    clientId: params.get("client") || DEFAULT_CONFIG.clientId,
-  };
+// --- Load config from localStorage (browser only) ---
+const loadConfig = () => {
+  if (typeof window !== "undefined") {
+    const saved = localStorage.getItem("kcConfig");
+    return saved ? JSON.parse(saved) : DEFAULT_CONFIG;
+  }
+  return DEFAULT_CONFIG;
 };
 
 export default function App() {
-  const [config, setConfig] = useState(DEFAULT_CONFIG);
+  const [config, setConfig] = useState(loadConfig);
   const [keycloak, setKeycloak] = useState(null);
   const [authenticated, setAuthenticated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [tokenExpiry, setTokenExpiry] = useState(null);
   const [tokenLifespan, setTokenLifespan] = useState(null);
-  const [showConfigForm, setShowConfigForm] = useState(true); 
   const [showConfigPanel, setShowConfigPanel] = useState(false);
 
-  // Load config from hash on mount
-  useEffect(() => {
-    const parsed = parseHashConfig();
-    setConfig(parsed);
+  const intervalRef = useRef(null);
 
-    // If URL hash has config, skip config form
-    if (parsed.url && parsed.realm && parsed.clientId) {
-      setShowConfigForm(false);
-      initKeycloak(parsed);
-    }
-  }, []);
-
+  // Init Keycloak
   const initKeycloak = async (cfg) => {
     setLoading(true);
     try {
+      // clear any old interval
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+
       const kc = new Keycloak({
         url: cfg.url,
         realm: cfg.realm,
@@ -74,8 +70,8 @@ export default function App() {
       });
 
       const auth = await kc.init({
-        onLoad: "login-required",
-        silentCheckSsoRedirectUri: `${window.location.origin}/silent-check-sso.html`,
+        onLoad: "check-sso",
+        pkceMethod: cfg.pkceMethod !== "none" ? cfg.pkceMethod : undefined,
         checkLoginIframe: false,
       });
 
@@ -85,9 +81,8 @@ export default function App() {
       if (auth && kc.tokenParsed) {
         const { exp, iat } = kc.tokenParsed;
         setTokenLifespan(exp - iat);
-        setTokenExpiry(exp - Math.floor(Date.now() / 1000));
 
-        const interval = setInterval(() => {
+        const updateRemaining = () => {
           const now = Math.floor(Date.now() / 1000);
           const remaining = kc.tokenParsed?.exp
             ? Math.max(kc.tokenParsed.exp - now, 0)
@@ -95,15 +90,16 @@ export default function App() {
           setTokenExpiry(remaining);
           if (remaining === 0) {
             kc.logout();
-            clearInterval(interval);
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
             setAuthenticated(false);
             setKeycloak(null);
-            setShowConfigForm(true);
           }
-        }, 1000);
-      }
+        };
 
-      setShowConfigForm(false);
+        updateRemaining();
+        intervalRef.current = setInterval(updateRemaining, 1000);
+      }
     } catch (err) {
       console.error("Keycloak init error:", err);
     } finally {
@@ -111,35 +107,51 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    if (config && !authenticated) {
+      initKeycloak(config);
+    }
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
+
   const handleSignIn = () => {
-    initKeycloak(config);
+    if (!keycloak) {
+      alert("Keycloak not initialized!");
+      return;
+    }
+    keycloak.login();
   };
 
   const handleLogout = () => {
     keycloak?.logout();
     setAuthenticated(false);
     setKeycloak(null);
-    setShowConfigForm(true);
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
   };
 
-  const handleClearConfig = () => {
-    setConfig(DEFAULT_CONFIG);
-    window.location.hash = "";
-    setShowConfigForm(true);
-  };
-
-  // Save config -> update hash -> re-init Keycloak
   const handleSaveConfig = () => {
-    const newHash = `#url=${encodeURIComponent(config.url)}&realm=${encodeURIComponent(
-      config.realm
-    )}&client=${encodeURIComponent(config.clientId)}`;
-    window.location.hash = newHash;
-    setShowConfigForm(false);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("kcConfig", JSON.stringify(config));
+    }
     initKeycloak(config);
   };
 
+  const handleClearConfig = () => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("kcConfig");
+    }
+    setConfig(DEFAULT_CONFIG);
+    setAuthenticated(false);
+    setKeycloak(null);
+  };
+
   const formatTime = (seconds) => {
-    if (!seconds) return "N/A";
+    if (!seconds && seconds !== 0) return "N/A";
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${m}:${s.toString().padStart(2, "0")}`;
@@ -152,45 +164,7 @@ export default function App() {
     return "red";
   };
 
-  // --- Config Form shown only if no hash and not logged in ---
-  if (showConfigForm && !authenticated) {
-    return (
-      <ChakraProvider>
-        <Center h="100vh">
-          <Card p={6}>
-            <VStack spacing={4}>
-              <Heading size="md">Keycloak Config</Heading>
-              <Text>Fill fields or use default values</Text>
-              <Input
-                placeholder={`URL (default: ${DEFAULT_CONFIG.url})`}
-                value={config.url}
-                onChange={(e) => setConfig((c) => ({ ...c, url: e.target.value }))}
-              />
-              <Input
-                placeholder={`Realm (default: ${DEFAULT_CONFIG.realm})`}
-                value={config.realm}
-                onChange={(e) => setConfig((c) => ({ ...c, realm: e.target.value }))}
-              />
-              <Input
-                placeholder={`Client ID (default: ${DEFAULT_CONFIG.clientId})`}
-                value={config.clientId}
-                onChange={(e) => setConfig((c) => ({ ...c, clientId: e.target.value }))}
-              />
-              <HStack pt={2}>
-                <Button colorScheme="blue" leftIcon={<FaSave />} onClick={handleSaveConfig}>
-                  Save & Sign In
-                </Button>
-                <Button colorScheme="red" onClick={handleClearConfig}>
-                  Clear
-                </Button>
-              </HStack>
-            </VStack>
-          </Card>
-        </Center>
-      </ChakraProvider>
-    );
-  }
-
+  // Loading state
   if (loading) {
     return (
       <ChakraProvider>
@@ -204,11 +178,56 @@ export default function App() {
     );
   }
 
+  // Config form if not authenticated
   if (!authenticated) {
     return (
       <ChakraProvider>
         <Center h="100vh">
-          <Text>Redirecting to Keycloak login...</Text>
+          <Card p={6}>
+            <VStack spacing={4}>
+              <Heading size="md">Keycloak Config</Heading>
+              <Input
+                placeholder="Keycloak URL"
+                value={config.url}
+                onChange={(e) => setConfig({ ...config, url: e.target.value })}
+              />
+              <Input
+                placeholder="Realm"
+                value={config.realm}
+                onChange={(e) => setConfig({ ...config, realm: e.target.value })}
+              />
+              <Input
+                placeholder="Client ID"
+                value={config.clientId}
+                onChange={(e) => setConfig({ ...config, clientId: e.target.value })}
+              />
+              <Input
+                placeholder="Client Secret (optional)"
+                type="password"
+                value={config.clientSecret}
+                onChange={(e) => setConfig({ ...config, clientSecret: e.target.value })}
+              />
+              <Select
+                value={config.pkceMethod}
+                onChange={(e) => setConfig({ ...config, pkceMethod: e.target.value })}
+              >
+                <option value="none">No PKCE</option>
+                <option value="S256">PKCE - S256</option>
+                <option value="plain">PKCE - Plain</option>
+              </Select>
+              <HStack pt={2}>
+                <Button colorScheme="blue" leftIcon={<FaSave />} onClick={handleSaveConfig}>
+                  Save Config
+                </Button>
+                <Button colorScheme="red" onClick={handleClearConfig}>
+                  Clear
+                </Button>
+              </HStack>
+              <Button colorScheme="green" mt={2} onClick={handleSignIn}>
+                Sign In
+              </Button>
+            </VStack>
+          </Card>
         </Center>
       </ChakraProvider>
     );
@@ -221,9 +240,7 @@ export default function App() {
       <Box p={6}>
         <Flex justify="space-between" align="center" mb={4}>
           <HStack>
-            {profilePic && (
-              <Image src={profilePic} alt="Profile" boxSize="80px" borderRadius="full" />
-            )}
+            {profilePic && <Image src={profilePic} alt="Profile" boxSize="80px" borderRadius="full" />}
             <Heading size="lg">Welcome {keycloak.tokenParsed?.given_name || "User"}</Heading>
           </HStack>
           <HStack>
@@ -236,7 +253,6 @@ export default function App() {
           </HStack>
         </Flex>
 
-        {/* Config panel (collapsible after login) */}
         <Collapse in={showConfigPanel} animateOpacity>
           <Card p={4} mb={4}>
             <VStack spacing={3}>
@@ -244,21 +260,35 @@ export default function App() {
               <Input
                 placeholder="Keycloak URL"
                 value={config.url}
-                onChange={(e) => setConfig((c) => ({ ...c, url: e.target.value }))}
+                onChange={(e) => setConfig({ ...config, url: e.target.value })}
               />
               <Input
                 placeholder="Realm"
                 value={config.realm}
-                onChange={(e) => setConfig((c) => ({ ...c, realm: e.target.value }))}
+                onChange={(e) => setConfig({ ...config, realm: e.target.value })}
               />
               <Input
                 placeholder="Client ID"
                 value={config.clientId}
-                onChange={(e) => setConfig((c) => ({ ...c, clientId: e.target.value }))}
+                onChange={(e) => setConfig({ ...config, clientId: e.target.value })}
               />
+              <Input
+                placeholder="Client Secret"
+                type="password"
+                value={config.clientSecret}
+                onChange={(e) => setConfig({ ...config, clientSecret: e.target.value })}
+              />
+              <Select
+                value={config.pkceMethod}
+                onChange={(e) => setConfig({ ...config, pkceMethod: e.target.value })}
+              >
+                <option value="none">No PKCE</option>
+                <option value="S256">PKCE - S256</option>
+                <option value="plain">PKCE - Plain</option>
+              </Select>
               <HStack pt={2}>
                 <Button colorScheme="blue" leftIcon={<FaSave />} onClick={handleSaveConfig}>
-                  Save & Sign In
+                  Save & Re-Login
                 </Button>
                 <Button colorScheme="red" onClick={handleClearConfig}>
                   Clear
@@ -274,9 +304,10 @@ export default function App() {
           <Text>URL: {config.url}</Text>
           <Text>Realm: {config.realm}</Text>
           <Text>Client: {config.clientId}</Text>
+          <Text>PKCE: {config.pkceMethod}</Text>
         </Card>
 
-        <SimpleGrid columns={{ base: 1, md: 2 }} spacing={6}h="500px"  >
+        <SimpleGrid columns={{ base: 1, md: 2 }} spacing={6} h="500px">
           <Card p={4}>
             <Heading size="sm" mb={2}><FaUser /> Profile</Heading>
             <Divider mb={2} />
@@ -295,11 +326,8 @@ export default function App() {
             <Divider mb={2} />
             <Text>Expires in: {formatTime(tokenExpiry)}</Text>
             <Progress mt={2} value={tokenLifespan ? (tokenExpiry / tokenLifespan) * 100 : 0} colorScheme={getProgressColor()} />
-           
-            {/* <Code mt={3} p={2} display="block" fontSize="xs" noOfLines={5}>{keycloak.token}</Code> */}
-          
-           <Code p={3} display="block" fontSize="md" whiteSpace="pre-wrap" maxH="500px" overflow="auto">
-             {keycloak.token}
+            <Code p={3} display="block" fontSize="md" whiteSpace="pre-wrap" maxH="500px" overflow="auto">
+              {keycloak.token}
             </Code>
           </Card>
 
@@ -315,4 +343,3 @@ export default function App() {
     </ChakraProvider>
   );
 }
-
